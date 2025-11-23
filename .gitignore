@@ -1,0 +1,22 @@
+# Node / Expo front
+fle-adaptive-test/node_modules/
+fle-adaptive-test/.expo/
+fle-adaptive-test/.expo-shared/
+fle-adaptive-test/dist/
+fle-adaptive-test/build/
+
+# Backend Node/Python/etc
+fle-backend/node_modules/
+fle-backend/dist/
+fle-backend/build/
+fle-backend/.venv/
+fle-backend/venv/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
