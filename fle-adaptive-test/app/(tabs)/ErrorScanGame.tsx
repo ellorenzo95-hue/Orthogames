@@ -22,7 +22,7 @@ export interface ErrorScanItem {
   discrimination_a?: number;
 }
 
-const BACKEND_URL = "http://192.168.0.32:8787"; // adapte à ton IP
+const BACKEND_URL = "http://192.168.0.27:8787"; // adapte à ton IP
 
 const ROUND_TIME_SECONDS = 30;
 const MAX_LIVES = 3;

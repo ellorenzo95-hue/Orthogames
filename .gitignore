@@ -11,6 +11,7 @@ fle-backend/dist/
 fle-backend/build/
 fle-backend/.venv/
 fle-backend/venv/
+fle-backend/.env
 
 # Logs
 npm-debug.log*

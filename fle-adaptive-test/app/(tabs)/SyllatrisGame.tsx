@@ -8,7 +8,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { View, Text, TouchableOpacity, ScrollView } from "react-native";
 
-const BACKEND_URL = "http://192.168.0.32:8787"; // adapte à ton IP locale
+const BACKEND_URL = "http://192.168.0.27:8787"; // adapte à ton IP locale
 
 interface TargetWord {
   word: string;

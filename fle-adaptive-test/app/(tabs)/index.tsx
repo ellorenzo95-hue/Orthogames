@@ -23,7 +23,7 @@ import SyllatrisGame from "./SyllatrisGame";
 
 
 // ⚠️ Mets ici l'IP de ton PC (même réseau que l'iPhone)
-const BACKEND_URL = "http://192.168.0.32:8787";
+const BACKEND_URL = "http://192.168.0.27:8787";
 
 // ---------------------- Skills & types ----------------------
 
