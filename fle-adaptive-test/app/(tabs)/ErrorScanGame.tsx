@@ -79,6 +79,9 @@ export default function ErrorScanGame() {
   const [lastSkillId, setLastSkillId] = useState<string | null>(null);
   const [lastWasCorrect, setLastWasCorrect] = useState<boolean | null>(null);
 
+  const [bestStreak, setBestStreak] = useState(0);
+  const [comboMessage, setComboMessage] = useState<string | null>(null);
+
   const [detailExplanation, setDetailExplanation] = useState<string | null>(null);
   const [extraExplanation, setExtraExplanation] = useState<string | null>(null);
   const [isLoadingExplanation, setIsLoadingExplanation] = useState(false);
@@ -91,6 +94,10 @@ export default function ErrorScanGame() {
   const [history, setHistory] = useState<RoundHistoryEntry[]>([]);
 
   const hearts = useMemo(() => "❤".repeat(Math.max(0, lives)), [lives]);
+  const liveComboMultiplier = useMemo(
+    () => 1 + Math.floor(Math.max(streak, 0) / 3) * 0.25,
+    [streak]
+  );
 
   // ---------- Chargement d'une manche ----------
 
@@ -106,6 +113,7 @@ export default function ErrorScanGame() {
     setFeedback(null);
     setDetailExplanation(null);
     setExtraExplanation(null);
+    setComboMessage(null);
     setRewriteEnabled(false);
     setRewriteAnswer("");
     setTimeLeft(ROUND_TIME_SECONDS);
@@ -182,6 +190,8 @@ export default function ErrorScanGame() {
 
     setRoundOver(true);
     setFeedback("⏰ Temps écoulé ! -1 vie");
+    setComboMessage(null);
+    setStreak(0);
 
     setLastSkillId(currentItem.skill_id);
     setLastWasCorrect(false);
@@ -223,12 +233,30 @@ export default function ErrorScanGame() {
       const timeFactor = Math.max(0, timeLeft) / ROUND_TIME_SECONDS; // 0 à 1
       const base = 100;
       const timeBonus = Math.round(50 * timeFactor);
-      const newPoints = base + timeBonus;
+      const nextStreak = streak + 1;
+      const comboMultiplier = 1 + Math.floor(nextStreak / 3) * 0.25; // +25% tous les 3 coups
+      const newPoints = Math.round((base + timeBonus) * comboMultiplier);
 
       setScore((prev) => prev + newPoints);
-      setStreak((prev) => prev + 1);
-      setFeedback(`✔ Correct ! +${newPoints} points`);
+      setStreak(nextStreak);
+      setBestStreak((prev) => Math.max(prev, nextStreak));
+      setFeedback(`✔ Correct ! x${comboMultiplier.toFixed(2)} · +${newPoints} points`);
+      setComboMessage(
+        nextStreak % 3 === 0
+          ? `Multiplicateur augmenté ! Série de ${nextStreak}`
+          : nextStreak > 1
+            ? `Série de ${nextStreak} en cours, continue !`
+            : null
+      );
       setRewriteEnabled(true); // propose de réécrire correctement
+
+      if (nextStreak > 0 && nextStreak % 4 === 0) {
+        setLives((prev) => {
+          if (prev >= MAX_LIVES) return prev;
+          setComboMessage(`🔥 Série de ${nextStreak} : +1 vie !`);
+          return Math.min(MAX_LIVES, prev + 1);
+        });
+      }
 
       pushHistory({
         round: roundNumber,
@@ -243,6 +271,7 @@ export default function ErrorScanGame() {
     } else {
       setStreak(0);
       setFeedback("✖ Mauvaise phrase ! -1 vie");
+      setComboMessage(null);
 
       pushHistory({
         round: roundNumber,
@@ -320,6 +349,8 @@ export default function ErrorScanGame() {
     setGameOver(false);
     setLastSkillId(null);
     setLastWasCorrect(null);
+    setBestStreak(0);
+    setComboMessage(null);
     setDetailExplanation(null);
     setExtraExplanation(null);
     setIsLoadingExplanation(false);
@@ -368,6 +399,7 @@ export default function ErrorScanGame() {
           <Text style={{ fontWeight: "700", marginBottom: 4 }}>Résumé global</Text>
           <Text>Score total : {score}</Text>
           <Text>Manches jouées : {totalRounds}</Text>
+          <Text>Meilleure série : {bestStreak}</Text>
         </View>
 
         <View
@@ -483,6 +515,38 @@ export default function ErrorScanGame() {
         </View>
       </View>
 
+      <View style={{ marginBottom: 12 }}>
+        <View
+          style={{
+            height: 8,
+            backgroundColor: "#edf2ff",
+            borderRadius: 999,
+            overflow: "hidden",
+          }}
+        >
+          <View
+            style={{
+              height: 8,
+              width: `${Math.max(0, Math.min(100, (timeLeft / ROUND_TIME_SECONDS) * 100))}%`,
+              backgroundColor: timeLeft < 8 ? "#e74c3c" : "#2f80ed",
+              borderRadius: 999,
+            }}
+          />
+        </View>
+        <Text style={{ fontSize: 10, color: "#555", marginTop: 4 }}>
+          Barre de temps : plus c'est vite, plus tu gagnes de points.
+        </Text>
+      </View>
+
+      <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 10 }}>
+        <Text style={{ fontSize: 12, fontWeight: "700", color: "#2f80ed" }}>
+          Multiplicateur actuel : x{liveComboMultiplier.toFixed(2)}
+        </Text>
+        <Text style={{ fontSize: 12, fontWeight: "700", color: "#f97316" }}>
+          Meilleure série : {bestStreak}
+        </Text>
+      </View>
+
       <Text style={{ fontSize: 18, fontWeight: "700", marginBottom: 8 }}>Trouve la phrase fautive</Text>
       <Text style={{ fontSize: 13, color: "#555", marginBottom: 12 }}>
         Une seule phrase contient une faute. Appuie dessus le plus vite possible, puis lis l'explication et, si tu veux,
@@ -528,6 +592,10 @@ export default function ErrorScanGame() {
 
       {feedback && (
         <Text style={{ marginTop: 12, fontSize: 14, fontWeight: "600" }}>{feedback}</Text>
+      )}
+
+      {comboMessage && (
+        <Text style={{ marginTop: 4, fontSize: 12, color: "#2f80ed" }}>{comboMessage}</Text>
       )}
 
       {detailExplanation && (
@@ -633,7 +701,7 @@ export default function ErrorScanGame() {
 
       {streak > 1 && (
         <Text style={{ marginTop: 4, fontSize: 12, color: "#2f80ed" }}>
-          Série actuelle : {streak} bonnes réponses d'affilée
+          Série actuelle : {streak} bonnes réponses d'affilée (x{liveComboMultiplier.toFixed(2)})
         </Text>
       )}
     </ScrollView>
