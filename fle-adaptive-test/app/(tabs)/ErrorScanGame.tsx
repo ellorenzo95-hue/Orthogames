@@ -17,7 +17,8 @@ export interface ErrorScanItem {
   skill_id: string; // ex: "ORT.HOM", "SYN.AGR"...
   level: CEFR;
   sentences: string[]; // 4–6 phrases
-  wrongIndex: number; // index de la phrase fautive
+  wrongIndex?: number; // index de la phrase fautive (legacy)
+  wrongIndexes?: number[]; // indices des phrases fautives (boss round)
   difficulty_b?: number;
   discrimination_a?: number;
 }
@@ -26,6 +27,74 @@ const BACKEND_URL = "http://192.168.0.27:8787"; // adapte à ton IP
 
 const ROUND_TIME_SECONDS = 30;
 const MAX_LIVES = 3;
+
+type RoundKind = "normal" | "sprint" | "boss";
+
+interface RoundSettings {
+  type: RoundKind;
+  label: string;
+  description: string;
+  timeLimit: number;
+  pointsMultiplier: number;
+  wrongAnswersRequired: number;
+  theme: {
+    background: string;
+    badge: string;
+    text: string;
+    timer: string;
+  };
+}
+
+function getRoundSettings(round: number): RoundSettings {
+  if (round % 5 === 0) {
+    return {
+      type: "boss",
+      label: "Boss round",
+      description: "2 phrases fautives à repérer. Points x2.5, temps allongé.",
+      timeLimit: 38,
+      pointsMultiplier: 2.5,
+      wrongAnswersRequired: 2,
+      theme: {
+        background: "#0f172a",
+        badge: "#fbbf24",
+        text: "#f8fafc",
+        timer: "#fbbf24",
+      },
+    };
+  }
+
+  if (round % 4 === 0) {
+    return {
+      type: "sprint",
+      label: "Round éclair",
+      description: "Temps réduit mais points doublés. Vise vite et bien !",
+      timeLimit: 18,
+      pointsMultiplier: 2,
+      wrongAnswersRequired: 1,
+      theme: {
+        background: "#0ea5e9",
+        badge: "#f97316",
+        text: "#f0f9ff",
+        timer: "#f97316",
+      },
+    };
+  }
+
+  return {
+    type: "normal",
+    label: "Manche classique",
+    description: "1 phrase fautive. Temps standard, score normal.",
+    timeLimit: ROUND_TIME_SECONDS,
+    pointsMultiplier: 1,
+    wrongAnswersRequired: 1,
+    theme: {
+      background: "#f4f7ff",
+      badge: "#2f80ed",
+      text: "#1f2937",
+      timer: "#2f80ed",
+    },
+  };
+}
 
 // Explications génériques par compétence pour aider l'utilisateur
 const SKILL_HINTS: Record<string, string> = {
@@ -55,8 +124,8 @@ interface RoundHistoryEntry {
   skill_id: string;
   level: CEFR;
   sentences: string[];
-  wrongIndex: number;
-  playerChoice: number | null;
+  wrongIndexes: number[];
+  playerChoices: number[];
   outcome: RoundOutcome;
   pointsEarned: number;
   playerRewrite?: string;
@@ -71,10 +140,15 @@ export default function ErrorScanGame() {
   const [lives, setLives] = useState(MAX_LIVES);
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [selectedIndexes, setSelectedIndexes] = useState<number[]>([]);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [roundOver, setRoundOver] = useState(false);
   const [gameOver, setGameOver] = useState(false);
+  const [timerActive, setTimerActive] = useState(false);
+  const [showRuleBanner, setShowRuleBanner] = useState(true);
+  const [activeRoundSettings, setActiveRoundSettings] = useState<RoundSettings>(
+    getRoundSettings(1)
+  );
 
   const [lastSkillId, setLastSkillId] = useState<string | null>(null);
   const [lastWasCorrect, setLastWasCorrect] = useState<boolean | null>(null);
@@ -94,7 +168,12 @@ export default function ErrorScanGame() {
 
   // ---------- Chargement d'une manche ----------
 
-  const loadNextItem = async () => {
+  const loadNextItem = async (round: number) => {
+    const settings = getRoundSettings(round);
+    setActiveRoundSettings(settings);
+    setTimerActive(false);
+    setShowRuleBanner(true);
+
     if (lives <= 0) {
       setGameOver(true);
       return;
@@ -102,13 +181,13 @@ export default function ErrorScanGame() {
 
     setIsLoadingItem(true);
     setRoundOver(false);
-    setSelectedIndex(null);
+    setSelectedIndexes([]);
     setFeedback(null);
     setDetailExplanation(null);
     setExtraExplanation(null);
     setRewriteEnabled(false);
     setRewriteAnswer("");
-    setTimeLeft(ROUND_TIME_SECONDS);
+    setTimeLeft(settings.timeLimit);
 
     try {
       const res = await fetch(`${BACKEND_URL}/error-scan-next`, {
@@ -121,6 +200,8 @@ export default function ErrorScanGame() {
           streak,
           lastSkillId,
           lastWasCorrect,
+          wrongAnswersRequested: settings.wrongAnswersRequired,
+          mode: settings.type,
         }),
       });
 
@@ -145,14 +226,15 @@ export default function ErrorScanGame() {
   };
 
   useEffect(() => {
-    loadNextItem();
+    loadNextItem(roundNumber);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [roundNumber]);
 
   // ---------- Timer ----------
 
   useEffect(() => {
-    if (gameOver || roundOver || isLoadingItem || !currentItem) return;
+    if (gameOver || roundOver || isLoadingItem || !currentItem || !timerActive)
+      return;
 
     if (timeLeft <= 0) {
       handleTimeout();
@@ -168,9 +250,16 @@ export default function ErrorScanGame() {
   }, [timeLeft, gameOver, roundOver, isLoadingItem, currentItem]);
 
   const prepareExplanation = (item: ErrorScanItem) => {
-    const wrongSentence = item.sentences[item.wrongIndex];
+    const wrongIndexes = item.wrongIndexes || (typeof item.wrongIndex === "number" ? [item.wrongIndex] : []);
+    const wrongSentences = wrongIndexes.map((idx) => item.sentences[idx]);
     const explanation = getSkillExplanation(item.skill_id);
-    setDetailExplanation(`La phrase fautive était : « ${wrongSentence} »\n\n${explanation}`);
+    const intro =
+      wrongSentences.length > 1
+        ? `Les phrases fautives étaient : \n- ${wrongSentences.join("\n- ")}`
+        : wrongSentences.length === 1
+        ? `La phrase fautive était : « ${wrongSentences[0]} »`
+        : "Impossible de retrouver la phrase fautive pour cette manche.";
+    setDetailExplanation(`${intro}\n\n${explanation}`);
   };
 
   const pushHistory = (entry: RoundHistoryEntry) => {
@@ -187,13 +276,15 @@ export default function ErrorScanGame() {
     setLastWasCorrect(false);
     prepareExplanation(currentItem);
 
+    const wrongIndexes = currentItem.wrongIndexes || (typeof currentItem.wrongIndex === "number" ? [currentItem.wrongIndex] : []);
+
     pushHistory({
       round: roundNumber,
       skill_id: currentItem.skill_id,
       level: currentItem.level,
       sentences: currentItem.sentences,
-      wrongIndex: currentItem.wrongIndex,
-      playerChoice: null,
+      wrongIndexes,
+      playerChoices: [],
       outcome: "timeout",
       pointsEarned: 0,
     });
@@ -208,26 +299,48 @@ export default function ErrorScanGame() {
   };
 
   const handleSentencePress = (index: number) => {
-    if (!currentItem || roundOver || gameOver) return;
+    if (!currentItem || roundOver || gameOver || !timerActive) return;
+
+    setSelectedIndexes((prev) => {
+      let next = prev.includes(index)
+        ? prev.filter((i) => i !== index)
+        : [...prev, index];
+
+      if (next.length > activeRoundSettings.wrongAnswersRequired) {
+        next = next.slice(1);
+      }
+
+      if (next.length === activeRoundSettings.wrongAnswersRequired) {
+        finalizeRound(next);
+      }
+
+      return next;
+    });
+  };
+
+  const finalizeRound = (choices: number[]) => {
+    if (!currentItem || roundOver) return;
+
+    const wrongIndexes = currentItem.wrongIndexes || (typeof currentItem.wrongIndex === "number" ? [currentItem.wrongIndex] : []);
+    const expectedSet = new Set(wrongIndexes);
+    const isCorrect =
+      choices.length === wrongIndexes.length && choices.every((i) => expectedSet.has(i));
 
     setRoundOver(true);
-    setSelectedIndex(index);
-
-    const isCorrect = index === currentItem.wrongIndex;
-
     setLastSkillId(currentItem.skill_id);
     setLastWasCorrect(isCorrect);
     prepareExplanation(currentItem);
 
     if (isCorrect) {
-      const timeFactor = Math.max(0, timeLeft) / ROUND_TIME_SECONDS; // 0 à 1
-      const base = 100;
-      const timeBonus = Math.round(50 * timeFactor);
-      const newPoints = base + timeBonus;
+      const timeFactor = Math.max(0, timeLeft) / activeRoundSettings.timeLimit; // 0 à 1
+      const base = 100 * activeRoundSettings.wrongAnswersRequired;
+      const timeBonus = Math.round((50 * activeRoundSettings.wrongAnswersRequired) * timeFactor);
+      const rawPoints = base + timeBonus;
+      const newPoints = Math.round(rawPoints * activeRoundSettings.pointsMultiplier);
 
       setScore((prev) => prev + newPoints);
       setStreak((prev) => prev + 1);
-      setFeedback(`✔ Correct ! +${newPoints} points`);
+      setFeedback(`✔ ${activeRoundSettings.label} réussi ! +${newPoints} points`);
       setRewriteEnabled(true); // propose de réécrire correctement
 
       pushHistory({
@@ -235,22 +348,22 @@ export default function ErrorScanGame() {
         skill_id: currentItem.skill_id,
         level: currentItem.level,
         sentences: currentItem.sentences,
-        wrongIndex: currentItem.wrongIndex,
-        playerChoice: index,
+        wrongIndexes,
+        playerChoices: choices,
         outcome: "correct",
         pointsEarned: newPoints,
       });
     } else {
       setStreak(0);
-      setFeedback("✖ Mauvaise phrase ! -1 vie");
+      setFeedback("✖ Mauvaise sélection ! -1 vie");
 
       pushHistory({
         round: roundNumber,
         skill_id: currentItem.skill_id,
         level: currentItem.level,
         sentences: currentItem.sentences,
-        wrongIndex: currentItem.wrongIndex,
-        playerChoice: index,
+        wrongIndexes,
+        playerChoices: choices,
         outcome: "wrong",
         pointsEarned: 0,
       });
@@ -303,7 +416,6 @@ export default function ErrorScanGame() {
       return;
     }
     setRoundNumber((r) => r + 1);
-    loadNextItem();
   };
 
   const handleRestart = () => {
@@ -314,7 +426,7 @@ export default function ErrorScanGame() {
     setLives(MAX_LIVES);
     setScore(0);
     setStreak(0);
-    setSelectedIndex(null);
+    setSelectedIndexes([]);
     setFeedback(null);
     setRoundOver(false);
     setGameOver(false);
@@ -326,7 +438,6 @@ export default function ErrorScanGame() {
     setRewriteEnabled(false);
     setRewriteAnswer("");
     setHistory([]);
-    loadNextItem();
   };
 
   // ---------- Récapitulatif & stats ----------
@@ -410,10 +521,12 @@ export default function ErrorScanGame() {
                 Manche {h.round} · {h.skill_id} · niveau {h.level}
               </Text>
               <Text style={{ fontSize: 12 }}>Issue : {h.outcome === "correct" ? "bonne" : h.outcome === "wrong" ? "mauvaise" : "temps écoulé"}</Text>
-              <Text style={{ fontSize: 12 }}>Phrase fautive : {h.sentences[h.wrongIndex]}</Text>
-              {typeof h.playerChoice === "number" && h.playerChoice !== h.wrongIndex && (
+              <Text style={{ fontSize: 12 }}>
+                Phrases fautives : {h.wrongIndexes.map((wi) => h.sentences[wi]).join(" · ")}
+              </Text>
+              {h.playerChoices.length > 0 && (
                 <Text style={{ fontSize: 12 }}>
-                  Phrase choisie : {h.sentences[h.playerChoice]}
+                  Tes choix : {h.playerChoices.map((pc) => h.sentences[pc]).join(" · ")}
                 </Text>
               )}
               {h.playerRewrite && (
@@ -466,27 +579,97 @@ export default function ErrorScanGame() {
     );
   }
 
+  const wrongIndexes = currentItem.wrongIndexes || (typeof currentItem.wrongIndex === "number" ? [currentItem.wrongIndex] : []);
+
+  const headerTheme = activeRoundSettings.theme;
+
   return (
     <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
-      <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 16 }}>
+      <View
+        style={{
+          backgroundColor: headerTheme.background,
+          borderRadius: 14,
+          padding: 14,
+          marginBottom: 14,
+        }}
+      >
+        <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+          <View style={{ flex: 1 }}>
+            <Text style={{ color: headerTheme.badge, fontSize: 12, fontWeight: "800" }}>
+              {activeRoundSettings.label.toUpperCase()}
+            </Text>
+            <Text style={{ color: headerTheme.text, fontSize: 16, fontWeight: "800" }}>Manche {roundNumber}</Text>
+            <Text style={{ color: headerTheme.text, fontSize: 12, marginTop: 4 }}>
+              {activeRoundSettings.description}
+            </Text>
+          </View>
+          <View style={{ alignItems: "flex-end" }}>
+            <Text style={{ color: headerTheme.text, fontSize: 12 }}>Temps</Text>
+            <Text style={{ color: headerTheme.timer, fontSize: 22, fontWeight: "900" }}>{timeLeft}s</Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 12 }}>
         <View>
           <Text style={{ fontSize: 14 }}>Score</Text>
           <Text style={{ fontSize: 20, fontWeight: "800" }}>{score}</Text>
         </View>
         <View>
-          <Text style={{ fontSize: 14 }}>Temps</Text>
-          <Text style={{ fontSize: 20, fontWeight: "800" }}>{timeLeft}s</Text>
-        </View>
-        <View>
           <Text style={{ fontSize: 14 }}>Vies</Text>
           <Text style={{ fontSize: 20, fontWeight: "800" }}>{hearts}</Text>
         </View>
+        <View>
+          <Text style={{ fontSize: 14 }}>Série</Text>
+          <Text style={{ fontSize: 20, fontWeight: "800" }}>{streak}</Text>
+        </View>
       </View>
+
+      {showRuleBanner && (
+        <View
+          style={{
+            backgroundColor: "#fff7ed",
+            borderColor: "#fdba74",
+            borderWidth: 1,
+            borderRadius: 12,
+            padding: 10,
+            marginBottom: 10,
+          }}
+        >
+          <Text style={{ fontSize: 13, fontWeight: "700", marginBottom: 4 }}>Règle de la manche</Text>
+          <Text style={{ fontSize: 12, color: "#7c2d12" }}>
+            {activeRoundSettings.type === "boss"
+              ? "Deux phrases contiennent des erreurs. Sélectionne-les toutes avant la fin du temps."
+              : activeRoundSettings.type === "sprint"
+              ? "Temps réduit, mais les points sont doublés. Vise la phrase fautive en priorité."
+              : "Une seule phrase fautive à repérer. Temps standard."}
+          </Text>
+          {!timerActive && (
+            <TouchableOpacity
+              onPress={() => {
+                setTimerActive(true);
+                setShowRuleBanner(false);
+              }}
+              style={{
+                marginTop: 8,
+                backgroundColor: "#2f80ed",
+                paddingVertical: 10,
+                borderRadius: 10,
+              }}
+            >
+              <Text style={{ color: "#fff", fontWeight: "800", textAlign: "center" }}>
+                Démarrer la manche
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
 
       <Text style={{ fontSize: 18, fontWeight: "700", marginBottom: 8 }}>Trouve la phrase fautive</Text>
       <Text style={{ fontSize: 13, color: "#555", marginBottom: 12 }}>
-        Une seule phrase contient une faute. Appuie dessus le plus vite possible, puis lis l'explication et, si tu veux,
-        réécris-la correctement.
+        {activeRoundSettings.wrongAnswersRequired > 1
+          ? "Deux phrases contiennent une faute. Appuie sur chacune d'elles avant la fin du compte à rebours."
+          : "Une seule phrase contient une faute. Appuie dessus le plus vite possible, puis lis l'explication et, si tu veux, réécris-la correctement."}
       </Text>
 
       <Text style={{ fontSize: 12, color: "#777", marginBottom: 8 }}>
@@ -494,12 +677,12 @@ export default function ErrorScanGame() {
       </Text>
 
       {currentItem.sentences.map((sentence, idx) => {
-        const isSelected = selectedIndex === idx;
-        const isWrong = roundOver && idx === currentItem.wrongIndex;
+        const isSelected = selectedIndexes.includes(idx);
+        const isWrong = roundOver && wrongIndexes.includes(idx);
 
         let borderColor = "#ddd";
         if (isWrong) borderColor = "#e74c3c";
-        else if (isSelected) borderColor = "#2f80ed";
+        else if (isSelected) borderColor = headerTheme.badge;
 
         const bg = isWrong ? "#fdecea" : isSelected ? "#e8f0ff" : "#fff";
 
@@ -507,7 +690,7 @@ export default function ErrorScanGame() {
           <TouchableOpacity
             key={idx}
             onPress={() => handleSentencePress(idx)}
-            disabled={roundOver}
+            disabled={roundOver || !timerActive}
             style={{
               borderWidth: isSelected ? 2 : 1,
               borderColor,
@@ -522,7 +705,13 @@ export default function ErrorScanGame() {
         );
       })}
 
-      {isLoadingItem && currentItem && !roundOver && (
+      {!timerActive && !roundOver && (
+        <Text style={{ marginTop: 8, fontSize: 12, color: "#888" }}>
+          Lis la règle, puis démarre la manche pour lancer le timer.
+        </Text>
+      )}
+
+      {isLoadingItem && currentItem && !roundOver && timerActive && (
         <Text style={{ marginTop: 8, fontSize: 12, color: "#888" }}>Préparation de la prochaine manche…</Text>
       )}
 

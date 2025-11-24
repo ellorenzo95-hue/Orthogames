@@ -44,12 +44,14 @@ export async function handleErrorScanNext(req, res) {
     streak = 0,
     lastSkillId = null,
     lastWasCorrect = null,
+    wrongAnswersRequested = 1,
   } = req.body || {};
 
   if (lives <= 0) {
     return res.status(400).json({ error: "No lives left" });
   }
 
+  const wrongCount = Math.max(1, Math.min(2, Number(wrongAnswersRequested) || 1));
   const numSentences = chooseNumSentences(score, round, streak);
   const targetSkill = chooseTargetSkill(lastSkillId, lastWasCorrect);
   const targetLevel = chooseTargetLevel(round, score);
@@ -76,10 +78,11 @@ Paramètres :
 - niveau CECR : ${targetLevel}
 - compétence ciblée (skill_id) : ${targetSkill}
 - nombre de phrases : ${numSentences}
+- nombre de phrases fautives à insérer : ${wrongCount}
 
 Contraintes :
 - Tu dois générer exactement ${numSentences} phrases courtes en français, naturelles et adaptées à des adolescents / adultes (pas de ton enfantin).
-- UNE SEULE phrase doit contenir une faute d'écrit, principalement liée à la compétence ${targetSkill}.
+- ${wrongCount === 1 ? "UNE SEULE" : "DEUX"} phrase${wrongCount > 1 ? "s" : ""} doit/doivent contenir une faute d'écrit, principalement liée(s) à la compétence ${targetSkill}.
 - Toutes les autres phrases doivent être correctes à l'écrit.
 - La phrase fautive doit être plausible mais clairement incorrecte du point de vue d'un enseignant.
 - Les phrases doivent être autonomes (pas de numérotation ou de marqueurs comme "1.", "2." dans le texte).
@@ -96,13 +99,13 @@ Tu dois répondre UNIQUEMENT avec un objet JSON ayant ce format précis :
     "phrase correcte ou fautive 2",
     "..."
   ],
-  "wrongIndex": 0
+  "wrongIndexes": [0${wrongCount > 1 ? ", 1" : ""}]
 }
 
 Notes :
-- "wrongIndex" est l'indice (0-based) de la phrase fautive dans le tableau "sentences".
+- "wrongIndexes" est le/les indice(s) (0-based) des phrase fautives dans le tableau "sentences".
 - Il doit y avoir exactement ${numSentences} éléments dans "sentences".
-- Il doit y avoir exactement UNE phrase fautive.
+- Il doit y avoir exactement ${wrongCount} phrase${wrongCount > 1 ? "s" : ""} fautive${wrongCount > 1 ? "s" : ""}.
 `,
         },
       ],
@@ -117,16 +120,29 @@ Notes :
       return res.status(500).json({ error: "Invalid JSON from model" });
     }
 
+    const wrongIndexes = Array.isArray(item?.wrongIndexes)
+      ? item.wrongIndexes
+      : typeof item?.wrongIndex === "number"
+      ? [item.wrongIndex]
+      : [];
+
+    const uniqueWrongIndexes = [...new Set(wrongIndexes)].filter(
+      (idx) => typeof idx === "number" && idx >= 0 && idx < numSentences
+    );
+
     if (
       !item ||
       !Array.isArray(item.sentences) ||
-      typeof item.wrongIndex !== "number" ||
-      item.sentences.length !== numSentences
+      item.sentences.length !== numSentences ||
+      uniqueWrongIndexes.length !== wrongCount
     ) {
       return res
         .status(500)
         .json({ error: "Invalid item structure from model", raw: item });
     }
+
+    item.wrongIndexes = uniqueWrongIndexes;
+    item.wrongIndex = uniqueWrongIndexes[0];
 
     return res.json({ item });
   } catch (err) {
@@ -142,13 +158,22 @@ export async function handleErrorScanExplain(req, res) {
   if (
     !item ||
     !Array.isArray(item.sentences) ||
-    typeof item.wrongIndex !== "number" ||
     typeof item.skill_id !== "string"
   ) {
     return res.status(400).json({ error: "Invalid item payload" });
   }
 
-  const wrongSentence = item.sentences[item.wrongIndex];
+  const wrongIndexes = Array.isArray(item.wrongIndexes)
+    ? item.wrongIndexes
+    : typeof item.wrongIndex === "number"
+    ? [item.wrongIndex]
+    : [];
+
+  if (wrongIndexes.length === 0) {
+    return res.status(400).json({ error: "Missing wrong index" });
+  }
+
+  const wrongSentence = item.sentences[wrongIndexes[0]];
   const skillId = item.skill_id;
 
   try {
